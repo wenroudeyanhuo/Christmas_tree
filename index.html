@@ -315,24 +315,24 @@
         }
 
         function updateAudioReactiveGlow() {
-            const glowBoost = 1 + audioReactiveLevel * 1.8 + audioPulseLevel * 1.2;
-            const sparkleBoost = 0.3 + audioReactiveLevel * 0.35 + audioPulseLevel * 0.35;
+            const glowBoost = 1 + audioReactiveLevel * 1.0 + audioPulseLevel * 0.7;
+            const sparkleBoost = 0.22 + audioReactiveLevel * 0.2 + audioPulseLevel * 0.22;
 
             if (sphereMesh) sphereMesh.material.emissiveIntensity = 1.5 * glowBoost;
-            if (cubeMesh) cubeMesh.material.emissiveIntensity = 1.0 * (1 + audioReactiveLevel * 1.2);
+            if (cubeMesh) cubeMesh.material.emissiveIntensity = 1.0 * (1 + audioReactiveLevel * 0.7);
             if (candyMesh) candyMesh.material.emissiveIntensity = 2.0 * glowBoost;
-            if (largeSphereMesh) largeSphereMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 2.0);
-            if (largeCubeMesh) largeCubeMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 1.7);
-            if (largeCandyMesh) largeCandyMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 1.9);
-            if (ribbonMesh) ribbonMesh.material.emissiveIntensity = 2.0 * (1 + audioReactiveLevel * 1.4 + audioPulseLevel * 0.8);
-            if (starMesh) starMesh.material.emissiveIntensity = 1.35 * (1 + audioReactiveLevel * 1.8 + audioPulseLevel);
+            if (largeSphereMesh) largeSphereMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 1.1);
+            if (largeCubeMesh) largeCubeMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 0.9);
+            if (largeCandyMesh) largeCandyMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 1.0);
+            if (ribbonMesh) ribbonMesh.material.emissiveIntensity = 2.0 * (1 + audioReactiveLevel * 0.8 + audioPulseLevel * 0.5);
+            if (starMesh) starMesh.material.emissiveIntensity = 1.35 * (1 + audioReactiveLevel * 1.0 + audioPulseLevel * 0.6);
             if (sparklesSystem) {
                 sparklesSystem.material.opacity = 0.45 + Math.sin(clock.getElapsedTime() * 5) * 0.25 + sparkleBoost;
-                sparklesSystem.material.size = 0.3 + audioReactiveLevel * 0.18 + audioPulseLevel * 0.12;
+                sparklesSystem.material.size = 0.3 + audioReactiveLevel * 0.1 + audioPulseLevel * 0.08;
             }
             if (bloomPass) {
-                bloomPass.strength = 2.0 + audioReactiveLevel * 1.2 + audioPulseLevel * 0.8;
-                bloomPass.radius = 0.6 + audioReactiveLevel * 0.12;
+                bloomPass.strength = 2.0 + audioReactiveLevel * 0.55 + audioPulseLevel * 0.35;
+                bloomPass.radius = 0.6 + audioReactiveLevel * 0.06;
             }
         }
 
@@ -816,10 +816,12 @@
                 const lowAverage = lowBand.reduce((sum, value) => sum + value, 0) / Math.max(lowBand.length, 1);
                 const highAverage = highBand.reduce((sum, value) => sum + value, 0) / Math.max(highBand.length, 1);
                 const weightedEnergy = lowAverage * 0.7 + highAverage * 0.3;
-                const targetReactiveLevel = Math.min(1, Math.pow(weightedEnergy / 160, 1.15));
-                const pulseTarget = Math.min(1, Math.max(0, (lowAverage - 90) / 120));
-                audioReactiveLevel += (targetReactiveLevel - audioReactiveLevel) * 0.2;
-                audioPulseLevel += (pulseTarget - audioPulseLevel) * 0.28;
+                const gatedEnergy = Math.max(0, weightedEnergy - 92);
+                const normalizedEnergy = Math.min(1, gatedEnergy / 110);
+                const targetReactiveLevel = Math.pow(normalizedEnergy, 1.45) * 0.85;
+                const pulseTarget = Math.min(1, Math.max(0, (lowAverage - 120) / 90)) * 0.8;
+                audioReactiveLevel += (targetReactiveLevel - audioReactiveLevel) * 0.16;
+                audioPulseLevel += (pulseTarget - audioPulseLevel) * 0.22;
             } else {
                 audioReactiveLevel += (0 - audioReactiveLevel) * 0.08;
                 audioPulseLevel += (0 - audioPulseLevel) * 0.12;
