@@ -180,7 +180,7 @@
     <div id="loading-screen">
         <div class="loader-spinner"></div>
         <div id="loading-text">RESTORING V13 CONFIG...</div>
-        <div style="font-size: 12px; color: #666; margin-top: 10px;">(Live Server Required)</div>
+        <div id="loading-note" style="font-size: 12px; color: #666; margin-top: 10px;">(Live Server Required)</div>
     </div>
 
     <div id="controls-container">
@@ -248,6 +248,12 @@
 
         let particlesData = []; let photosData = []; let photoMeshes = [];
         let defaultFrameTexture; let sparkleData = [];
+        let currentMusicObjectUrl = null;
+        let currentParticleEmissiveIntensity = null;
+        let audioContext = null;
+        let audioAnalyser = null;
+        let audioDataArray = null;
+        let audioReactiveLevel = 0;
 
         let gestureRecognizer; let lastVideoTime = -1; let isGrabbing = false;
         let selectedPhotoIndex = -1;
@@ -256,11 +262,145 @@
 
         const videoEl = document.getElementById('webcam-view');
         const stateLabel = document.getElementById('current-state');
+        const loadingScreen = document.getElementById('loading-screen');
+        const loadingText = document.getElementById('loading-text');
+        const loadingNote = document.getElementById('loading-note');
         const hints = { palm: document.getElementById('h-palm'), fist: document.getElementById('h-fist'), pinch: document.getElementById('h-pinch') };
+        const defaultHintText = {
+            palm: hints.palm.textContent,
+            fist: hints.fist.textContent,
+            pinch: hints.pinch.textContent
+        };
 
         // ==========================================
         // 2. 初始化
         // ==========================================
+        function setLoadingState(message, note = "") {
+            loadingText.innerText = message;
+            loadingNote.innerText = note;
+        }
+
+        function hideLoader() {
+            if (!loadingScreen || loadingScreen.dataset.hidden === "true") return;
+            loadingScreen.dataset.hidden = "true";
+            loadingScreen.style.opacity = 0;
+            setTimeout(() => loadingScreen.remove(), 800);
+        }
+
+        function setGestureFallbackState(message) {
+            stateLabel.innerText = message;
+            hints.palm.textContent = 'Drag: Orbit';
+            hints.fist.textContent = 'Camera unavailable';
+            hints.pinch.textContent = 'Upload: Refresh photos';
+            highlightHint(null);
+        }
+
+        function restoreDefaultHintText() {
+            hints.palm.textContent = defaultHintText.palm;
+            hints.fist.textContent = defaultHintText.fist;
+            hints.pinch.textContent = defaultHintText.pinch;
+        }
+
+        function updateParticleEmissiveIntensity(intensity) {
+            if (currentParticleEmissiveIntensity === intensity) return;
+            currentParticleEmissiveIntensity = intensity;
+
+            const updatedMeshes = new Set();
+            particlesData.forEach(p => {
+                if (!p.baseEmissive || updatedMeshes.has(p.mesh)) return;
+                p.mesh.material.emissive.copy(p.baseEmissive).multiplyScalar(intensity);
+                updatedMeshes.add(p.mesh);
+            });
+        }
+
+        function disposeTextureIfOwned(texture) {
+            if (!texture || texture === defaultFrameTexture) return;
+            texture.dispose();
+        }
+
+        function setPhotoTexture(mesh, texture) {
+            const oldTexture = mesh.material.map;
+            if (oldTexture === texture) return;
+            mesh.material.map = texture;
+            mesh.material.needsUpdate = true;
+            disposeTextureIfOwned(oldTexture);
+        }
+
+        function ensureAudioAnalyser(audioPlayer) {
+            if (audioAnalyser || typeof AudioContext === 'undefined') return;
+
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextCtor) return;
+
+            audioContext = new AudioContextCtor();
+            const source = audioContext.createMediaElementSource(audioPlayer);
+            audioAnalyser = audioContext.createAnalyser();
+            audioAnalyser.fftSize = 128;
+            audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+            source.connect(audioAnalyser);
+            audioAnalyser.connect(audioContext.destination);
+        }
+
+        async function resumeAudioContextIfNeeded() {
+            if (audioContext && audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+        }
+
+        function getPhotoDepthScore(photo) {
+            const worldPos = photo.mesh.getWorldPosition(new THREE.Vector3());
+            return camera.position.distanceToSquared(worldPos);
+        }
+
+        function selectFocusPhotoIndex() {
+            if (!photosData.length) return -1;
+
+            let bestIndex = 0;
+            let bestScore = Infinity;
+            const screenCenter = new THREE.Vector2(0, 0);
+
+            photosData.forEach((photo, index) => {
+                const projected = photo.mesh.position.clone().project(camera);
+                const centerScore = projected.distanceToSquared(screenCenter);
+                const depthScore = getPhotoDepthScore(photo) * 0.0005;
+                const score = centerScore + depthScore;
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIndex = index;
+                }
+            });
+
+            return bestIndex;
+        }
+
+        function triggerPhotoFocus(index = selectFocusPhotoIndex()) {
+            if (currentState !== STATES.SCATTERED || isGrabbing || index < 0) return;
+            isGrabbing = true;
+            selectedPhotoIndex = index;
+            switchState(STATES.ENLARGED);
+            setTimeout(() => isGrabbing = false, 1500);
+        }
+
+        function initFallbackInteractions() {
+            renderer.domElement.addEventListener('dblclick', () => {
+                if (currentState === STATES.COLLAPSED) {
+                    switchState(STATES.SCATTERED);
+                    return;
+                }
+                if (currentState === STATES.ENLARGED) {
+                    switchState(STATES.SCATTERED);
+                    return;
+                }
+                triggerPhotoFocus();
+            });
+
+            renderer.domElement.addEventListener('touchend', (event) => {
+                if (event.touches.length === 0 && event.changedTouches.length === 1) {
+                    triggerPhotoFocus();
+                }
+            }, { passive: true });
+        }
+
         async function init() {
             try {
                 defaultFrameTexture = createTrueColorFrame(null);
@@ -272,15 +412,24 @@
                 initRibbon(); initStar(); initSparkles(); initPhotos();
                 initPostProcessing();
                 initUpload(); initMusic();
+                initFallbackInteractions();
 
                 animate();
-                await initMediaPipe();
-
-                const loader = document.getElementById('loading-screen');
-                loader.style.opacity = 0;
-                setTimeout(() => loader.remove(), 800);
                 switchState(STATES.COLLAPSED);
-            } catch (e) { console.error(e); }
+                hideLoader();
+
+                try {
+                    await initMediaPipe();
+                    restoreDefaultHintText();
+                } catch (gestureError) {
+                    console.error(gestureError);
+                    setGestureFallbackState('BARBIE TREE VIEW MODE');
+                }
+            } catch (e) {
+                console.error(e);
+                setLoadingState('STARTUP ERROR', 'Please refresh and try again.');
+                stateLabel.innerText = 'VIEW UNAVAILABLE';
+            }
         }
 
         // ==========================================
@@ -292,12 +441,25 @@
             const playBtn = document.getElementById('play-btn');
             musicInput.addEventListener('change', (e) => {
                 const file = e.target.files[0]; if (!file) return;
-                audioPlayer.src = URL.createObjectURL(file); audioPlayer.volume = 0.5;
+                if (currentMusicObjectUrl) {
+                    URL.revokeObjectURL(currentMusicObjectUrl);
+                }
+                currentMusicObjectUrl = URL.createObjectURL(file);
+                audioPlayer.src = currentMusicObjectUrl; audioPlayer.volume = 0.5;
+                ensureAudioAnalyser(audioPlayer);
                 playBtn.style.display = 'inline-flex'; playBtn.innerHTML = '▶ Play Music';
-                audioPlayer.play().then(() => updatePlayBtnState(true)).catch(() => { });
+                resumeAudioContextIfNeeded()
+                    .then(() => audioPlayer.play())
+                    .then(() => updatePlayBtnState(true))
+                    .catch(() => updatePlayBtnState(false));
             });
             playBtn.addEventListener('click', () => {
-                if (audioPlayer.paused) { audioPlayer.play(); updatePlayBtnState(true); }
+                if (audioPlayer.paused) {
+                    resumeAudioContextIfNeeded()
+                        .then(() => audioPlayer.play())
+                        .then(() => updatePlayBtnState(true))
+                        .catch(() => updatePlayBtnState(false));
+                }
                 else { audioPlayer.pause(); updatePlayBtnState(false); }
             });
             function updatePlayBtnState(isPlaying) {
@@ -317,15 +479,17 @@
                         reader.onload = (ev) => {
                             const img = new Image();
                             img.onload = () => { resolve(createTrueColorFrame(img)); };
+                            img.onerror = () => { resolve(createTrueColorFrame(null)); };
                             img.src = ev.target.result;
-                        }; reader.readAsDataURL(file);
+                        };
+                        reader.onerror = () => { resolve(createTrueColorFrame(null)); };
+                        reader.readAsDataURL(file);
                     });
                 });
                 const newTextures = await Promise.all(texturePromises);
                 for (let i = 0; i < CONFIG.PHOTO_COUNT; i++) {
                     const texture = newTextures[i % newTextures.length];
-                    photoMeshes[i].material.map = texture;
-                    photoMeshes[i].material.needsUpdate = true;
+                    setPhotoTexture(photoMeshes[i], texture);
                 }
             });
         }
@@ -510,6 +674,11 @@
                 particlesData.push({
                     mesh: mesh, index: i, current: posData.collapsed.clone(), target: posData.collapsed.clone(),
                     collapsed: posData.collapsed, scattered: posData.scattered, driftOffset: Math.random() * 100,
+                    rotation: new THREE.Euler(
+                        dummy.rotation.x,
+                        dummy.rotation.y,
+                        dummy.rotation.z
+                    ),
                     rotationSpeed: new THREE.Vector3(Math.random() * 0.02, Math.random() * 0.02, Math.random() * 0.02),
                     baseEmissive: baseEmissive
                 });
@@ -617,6 +786,15 @@
             const time = clock.getElapsedTime();
             const lerpSpeed = Math.min(delta * CONFIG.TRANSITION_SPEED, 1);
 
+            if (audioAnalyser && audioDataArray) {
+                audioAnalyser.getByteFrequencyData(audioDataArray);
+                const average = audioDataArray.reduce((sum, value) => sum + value, 0) / audioDataArray.length;
+                const targetReactiveLevel = average / 255;
+                audioReactiveLevel += (targetReactiveLevel - audioReactiveLevel) * 0.12;
+            } else {
+                audioReactiveLevel += (0 - audioReactiveLevel) * 0.08;
+            }
+
             scene.rotation.y += (targetSceneRotationY - scene.rotation.y) * 0.05;
             scene.rotation.x += (targetSceneRotationX - scene.rotation.x) * 0.05;
 
@@ -633,25 +811,30 @@
                 if (p.isStar) {
                     p.mesh.position.copy(p.current);
                     p.mesh.rotation.y += p.rotationSpeed.y;
-                    p.mesh.rotation.z = Math.sin(time) * 0.1;
+                    p.mesh.rotation.z = Math.sin(time) * (0.1 + audioReactiveLevel * 0.08);
+                    p.mesh.scale.setScalar(0.5 + audioReactiveLevel * 0.08);
                     starPointLight.position.copy(p.current);
+                    starPointLight.intensity = 0.8 + audioReactiveLevel * 1.4;
                 } else {
                     dummy.position.copy(p.current);
-                    const s = currentState === STATES.SCATTERED ? (p.isRibbon ? 1.0 : 0.8) : (p.isRibbon ? 0.8 : 0.5);
+                    const baseScale = currentState === STATES.SCATTERED ? (p.isRibbon ? 1.0 : 0.8) : (p.isRibbon ? 0.8 : 0.5);
+                    const reactiveBoost = p.isRibbon ? audioReactiveLevel * 0.08 : audioReactiveLevel * 0.05;
+                    const s = baseScale + reactiveBoost;
                     dummy.scale.set(s, s, s);
-                    if (p.isRibbon && currentState === STATES.SCATTERED) {
-                        dummy.rotation.x += p.rotationSpeed.x; dummy.rotation.y += p.rotationSpeed.y;
-                    } else if (!p.isRibbon) {
-                        dummy.rotation.x += p.rotationSpeed.x; dummy.rotation.y += p.rotationSpeed.y;
+                    if (p.rotation) {
+                        p.rotation.x += p.rotationSpeed.x;
+                        p.rotation.y += p.rotationSpeed.y;
+                        if (p.isRibbon && currentState === STATES.SCATTERED) {
+                            p.rotation.z += p.rotationSpeed.z;
+                        } else if (!p.isRibbon) {
+                            p.rotation.z += p.rotationSpeed.z;
+                        }
+                        dummy.rotation.copy(p.rotation);
+                    } else {
+                        dummy.rotation.set(0, 0, 0);
                     }
                     dummy.updateMatrix();
                     p.mesh.setMatrixAt(p.index, dummy.matrix);
-
-                    if (p.baseEmissive) {
-                        const intensity = currentState === STATES.SCATTERED ? 2.0 : 1.0;
-                        p.mesh.material.emissive = p.baseEmissive.clone().multiplyScalar(intensity);
-                        p.mesh.material.needsUpdate = true;
-                    }
                 }
             });
             sphereMesh.instanceMatrix.needsUpdate = true;
@@ -681,7 +864,7 @@
                 }
             }
             sparklesSystem.geometry.attributes.position.needsUpdate = true;
-            sparklesSystem.material.opacity = 0.5 + Math.sin(time * 5) * 0.3;
+            sparklesSystem.material.opacity = 0.5 + Math.sin(time * 5) * 0.3 + audioReactiveLevel * 0.15;
 
             // 3. 照片更新 (【恢复】动态FOV距离计算)
             const vFOV = THREE.MathUtils.degToRad(camera.fov);
@@ -723,15 +906,18 @@
             if (newState === STATES.COLLAPSED) {
                 text = "🎄 BARBIE TREE";
                 controls.autoRotate = true;
+                updateParticleEmissiveIntensity(1.0);
                 particlesData.forEach(p => p.target.copy(p.collapsed));
                 photosData.forEach(p => p.target.copy(p.collapsed));
             } else if (newState === STATES.SCATTERED) {
                 text = "✨ GALAXY (WAVE HAND)";
                 controls.autoRotate = false;
+                updateParticleEmissiveIntensity(2.0);
                 particlesData.forEach(p => p.target.copy(p.scattered));
                 photosData.forEach(p => p.target.copy(p.scattered));
             } else if (newState === STATES.ENLARGED) {
                 text = "💖 PRECIOUS MEMORY";
+                updateParticleEmissiveIntensity(1.0);
                 // 放大时，其他照片回散开位
                 photosData.forEach((p, i) => {
                     if (i !== selectedPhotoIndex) p.target.copy(p.scattered);
@@ -744,6 +930,10 @@
         // 9. MediaPipe AI 交互 (XY轴旋转 + 鲁棒捏合)
         // ==========================================
         async function initMediaPipe() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error('Camera access is not supported in this browser.');
+            }
+
             const vision = await FilesetResolver.forVisionTasks(
                 "https://unpkg.com/@mediapipe/tasks-vision@0.10.3/wasm"
             );
@@ -756,7 +946,7 @@
             });
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             videoEl.srcObject = stream;
-            videoEl.addEventListener("loadeddata", predictLoop);
+            videoEl.addEventListener("loadeddata", predictLoop, { once: true });
         }
 
         function predictLoop() {
@@ -810,12 +1000,7 @@
 
                 if (dist < CONFIG.PINCH_THRESHOLD) {
                     highlightHint('pinch');
-                    if (!isGrabbing) {
-                        isGrabbing = true;
-                        selectedPhotoIndex = Math.floor(Math.random() * CONFIG.PHOTO_COUNT);
-                        switchState(STATES.ENLARGED);
-                        setTimeout(() => isGrabbing = false, 1500);
-                    }
+                    triggerPhotoFocus();
                 }
             }
         }
