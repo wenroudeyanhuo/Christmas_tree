@@ -254,6 +254,7 @@
         let audioAnalyser = null;
         let audioDataArray = null;
         let audioReactiveLevel = 0;
+        let audioPulseLevel = 0;
 
         let gestureRecognizer; let lastVideoTime = -1; let isGrabbing = false;
         let selectedPhotoIndex = -1;
@@ -335,7 +336,7 @@
             audioContext = new AudioContextCtor();
             const source = audioContext.createMediaElementSource(audioPlayer);
             audioAnalyser = audioContext.createAnalyser();
-            audioAnalyser.fftSize = 128;
+            audioAnalyser.fftSize = 256;
             audioDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
             source.connect(audioAnalyser);
             audioAnalyser.connect(audioContext.destination);
@@ -788,11 +789,18 @@
 
             if (audioAnalyser && audioDataArray) {
                 audioAnalyser.getByteFrequencyData(audioDataArray);
-                const average = audioDataArray.reduce((sum, value) => sum + value, 0) / audioDataArray.length;
-                const targetReactiveLevel = average / 255;
-                audioReactiveLevel += (targetReactiveLevel - audioReactiveLevel) * 0.12;
+                const lowBand = audioDataArray.slice(0, 12);
+                const highBand = audioDataArray.slice(12, 48);
+                const lowAverage = lowBand.reduce((sum, value) => sum + value, 0) / Math.max(lowBand.length, 1);
+                const highAverage = highBand.reduce((sum, value) => sum + value, 0) / Math.max(highBand.length, 1);
+                const weightedEnergy = lowAverage * 0.7 + highAverage * 0.3;
+                const targetReactiveLevel = Math.min(1, Math.pow(weightedEnergy / 160, 1.15));
+                const pulseTarget = Math.min(1, Math.max(0, (lowAverage - 90) / 120));
+                audioReactiveLevel += (targetReactiveLevel - audioReactiveLevel) * 0.2;
+                audioPulseLevel += (pulseTarget - audioPulseLevel) * 0.28;
             } else {
                 audioReactiveLevel += (0 - audioReactiveLevel) * 0.08;
+                audioPulseLevel += (0 - audioPulseLevel) * 0.12;
             }
 
             scene.rotation.y += (targetSceneRotationY - scene.rotation.y) * 0.05;
@@ -811,14 +819,16 @@
                 if (p.isStar) {
                     p.mesh.position.copy(p.current);
                     p.mesh.rotation.y += p.rotationSpeed.y;
-                    p.mesh.rotation.z = Math.sin(time) * (0.1 + audioReactiveLevel * 0.08);
-                    p.mesh.scale.setScalar(0.5 + audioReactiveLevel * 0.08);
+                    p.mesh.rotation.z = Math.sin(time) * (0.12 + audioReactiveLevel * 0.16);
+                    p.mesh.scale.setScalar(0.5 + audioReactiveLevel * 0.16 + audioPulseLevel * 0.12);
                     starPointLight.position.copy(p.current);
-                    starPointLight.intensity = 0.8 + audioReactiveLevel * 1.4;
+                    starPointLight.intensity = 0.8 + audioReactiveLevel * 2.6 + audioPulseLevel * 1.8;
                 } else {
                     dummy.position.copy(p.current);
                     const baseScale = currentState === STATES.SCATTERED ? (p.isRibbon ? 1.0 : 0.8) : (p.isRibbon ? 0.8 : 0.5);
-                    const reactiveBoost = p.isRibbon ? audioReactiveLevel * 0.08 : audioReactiveLevel * 0.05;
+                    const reactiveBoost = p.isRibbon
+                        ? audioReactiveLevel * 0.18 + audioPulseLevel * 0.08
+                        : audioReactiveLevel * 0.1 + audioPulseLevel * 0.04;
                     const s = baseScale + reactiveBoost;
                     dummy.scale.set(s, s, s);
                     if (p.rotation) {
@@ -864,7 +874,7 @@
                 }
             }
             sparklesSystem.geometry.attributes.position.needsUpdate = true;
-            sparklesSystem.material.opacity = 0.5 + Math.sin(time * 5) * 0.3 + audioReactiveLevel * 0.15;
+            sparklesSystem.material.opacity = 0.45 + Math.sin(time * 5) * 0.25 + audioReactiveLevel * 0.3 + audioPulseLevel * 0.2;
 
             // 3. 照片更新 (【恢复】动态FOV距离计算)
             const vFOV = THREE.MathUtils.degToRad(camera.fov);
