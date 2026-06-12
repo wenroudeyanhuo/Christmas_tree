@@ -244,7 +244,7 @@
         let sphereMesh, cubeMesh, candyMesh;
         let largeSphereMesh, largeCubeMesh, largeCandyMesh; // 【恢复】大型Mesh
         let ribbonMesh, starMesh;
-        let sparklesSystem, starPointLight;
+        let sparklesSystem, starPointLight, bloomPass;
 
         let particlesData = []; let photosData = []; let photoMeshes = [];
         let defaultFrameTexture; let sparkleData = [];
@@ -312,6 +312,28 @@
                 p.mesh.material.emissive.copy(p.baseEmissive).multiplyScalar(intensity);
                 updatedMeshes.add(p.mesh);
             });
+        }
+
+        function updateAudioReactiveGlow() {
+            const glowBoost = 1 + audioReactiveLevel * 1.8 + audioPulseLevel * 1.2;
+            const sparkleBoost = 0.3 + audioReactiveLevel * 0.35 + audioPulseLevel * 0.35;
+
+            if (sphereMesh) sphereMesh.material.emissiveIntensity = 1.5 * glowBoost;
+            if (cubeMesh) cubeMesh.material.emissiveIntensity = 1.0 * (1 + audioReactiveLevel * 1.2);
+            if (candyMesh) candyMesh.material.emissiveIntensity = 2.0 * glowBoost;
+            if (largeSphereMesh) largeSphereMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 2.0);
+            if (largeCubeMesh) largeCubeMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 1.7);
+            if (largeCandyMesh) largeCandyMesh.material.emissiveIntensity = 0.5 * (1 + audioReactiveLevel * 1.9);
+            if (ribbonMesh) ribbonMesh.material.emissiveIntensity = 2.0 * (1 + audioReactiveLevel * 1.4 + audioPulseLevel * 0.8);
+            if (starMesh) starMesh.material.emissiveIntensity = 1.35 * (1 + audioReactiveLevel * 1.8 + audioPulseLevel);
+            if (sparklesSystem) {
+                sparklesSystem.material.opacity = 0.45 + Math.sin(clock.getElapsedTime() * 5) * 0.25 + sparkleBoost;
+                sparklesSystem.material.size = 0.3 + audioReactiveLevel * 0.18 + audioPulseLevel * 0.12;
+            }
+            if (bloomPass) {
+                bloomPass.strength = 2.0 + audioReactiveLevel * 1.2 + audioPulseLevel * 0.8;
+                bloomPass.radius = 0.6 + audioReactiveLevel * 0.12;
+            }
         }
 
         function disposeTextureIfOwned(texture) {
@@ -531,7 +553,7 @@
         function initPostProcessing() {
             const renderScene = new RenderPass(scene, camera);
             // 阈值0.95，确保原色照片不发光
-            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 2.0, 0.6, 0.95);
+            bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 2.0, 0.6, 0.95);
             composer = new EffectComposer(renderer);
             composer.addPass(renderScene); composer.addPass(bloomPass);
         }
@@ -874,7 +896,7 @@
                 }
             }
             sparklesSystem.geometry.attributes.position.needsUpdate = true;
-            sparklesSystem.material.opacity = 0.45 + Math.sin(time * 5) * 0.25 + audioReactiveLevel * 0.3 + audioPulseLevel * 0.2;
+            updateAudioReactiveGlow();
 
             // 3. 照片更新 (【恢复】动态FOV距离计算)
             const vFOV = THREE.MathUtils.degToRad(camera.fov);
