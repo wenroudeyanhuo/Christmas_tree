@@ -245,6 +245,7 @@
         let largeSphereMesh, largeCubeMesh, largeCandyMesh; // 【恢复】大型Mesh
         let ribbonMesh, starMesh;
         let sparklesSystem, starPointLight, bloomPass;
+        let auraMesh, ambientDustSystem, foregroundDustSystem;
 
         let particlesData = []; let photosData = []; let photoMeshes = [];
         let defaultFrameTexture; let sparkleData = [];
@@ -382,9 +383,12 @@
             let bestIndex = 0;
             let bestScore = Infinity;
             const screenCenter = new THREE.Vector2(0, 0);
+            const worldPos = new THREE.Vector3();
 
             photosData.forEach((photo, index) => {
-                const projected = photo.mesh.position.clone().project(camera);
+                photo.mesh.getWorldPosition(worldPos);
+                const projected = worldPos.clone().project(camera);
+                if (projected.z < -1 || projected.z > 1) return;
                 const centerScore = projected.distanceToSquared(screenCenter);
                 const depthScore = getPhotoDepthScore(photo) * 0.0005;
                 const score = centerScore + depthScore;
@@ -433,7 +437,7 @@
                 initElements(); // 基础粉色
                 initLargeElements(); // 【恢复】大型银色
 
-                initRibbon(); initStar(); initSparkles(); initPhotos();
+                initRibbon(); initStar(); initSparkles(); initAtmosphere(); initPhotos();
                 initPostProcessing();
                 initUpload(); initMusic();
                 initFallbackInteractions();
@@ -684,6 +688,81 @@
             scene.add(sparklesSystem);
         }
 
+        function createSoftGlowTexture(innerColor, outerColor) {
+            const size = 256;
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(size / 2, size / 2, 10, size / 2, size / 2, size / 2);
+            gradient.addColorStop(0, innerColor);
+            gradient.addColorStop(0.35, outerColor);
+            gradient.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, size, size);
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.colorSpace = THREE.SRGBColorSpace;
+            return texture;
+        }
+
+        function initAtmosphere() {
+            const auraTexture = createSoftGlowTexture('rgba(255, 182, 193, 0.55)', 'rgba(255, 20, 147, 0.08)');
+            const auraMaterial = new THREE.SpriteMaterial({
+                map: auraTexture,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+                opacity: 0.55
+            });
+            auraMesh = new THREE.Sprite(auraMaterial);
+            auraMesh.position.set(0, 2, -8);
+            auraMesh.scale.set(52, 52, 1);
+            scene.add(auraMesh);
+
+            const ambientGeo = new THREE.BufferGeometry();
+            const ambientCount = 420;
+            const ambientPositions = new Float32Array(ambientCount * 3);
+            for (let i = 0; i < ambientCount; i++) {
+                const radius = 28 + Math.random() * 26;
+                const theta = Math.random() * Math.PI * 2;
+                const y = (Math.random() - 0.5) * 42;
+                ambientPositions[i * 3] = Math.cos(theta) * radius;
+                ambientPositions[i * 3 + 1] = y;
+                ambientPositions[i * 3 + 2] = Math.sin(theta) * radius;
+            }
+            ambientGeo.setAttribute('position', new THREE.BufferAttribute(ambientPositions, 3));
+            const ambientMat = new THREE.PointsMaterial({
+                color: 0xFFD6E7,
+                size: 0.22,
+                transparent: true,
+                opacity: 0.22,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+            ambientDustSystem = new THREE.Points(ambientGeo, ambientMat);
+            scene.add(ambientDustSystem);
+
+            const foregroundGeo = new THREE.BufferGeometry();
+            const foregroundCount = 36;
+            const foregroundPositions = new Float32Array(foregroundCount * 3);
+            for (let i = 0; i < foregroundCount; i++) {
+                foregroundPositions[i * 3] = (Math.random() - 0.5) * 18;
+                foregroundPositions[i * 3 + 1] = (Math.random() - 0.5) * 12;
+                foregroundPositions[i * 3 + 2] = 18 + Math.random() * 18;
+            }
+            foregroundGeo.setAttribute('position', new THREE.BufferAttribute(foregroundPositions, 3));
+            const foregroundMat = new THREE.PointsMaterial({
+                color: 0xFFFFFF,
+                size: 0.55,
+                transparent: true,
+                opacity: 0.16,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+            foregroundDustSystem = new THREE.Points(foregroundGeo, foregroundMat);
+            scene.add(foregroundDustSystem);
+        }
+
         function createInstancedGroup(geo, mat, count, palette) {
             const mesh = new THREE.InstancedMesh(geo, mat, count);
             const dummy = new THREE.Object3D();
@@ -911,6 +990,33 @@
             }
             sparklesSystem.geometry.attributes.position.needsUpdate = true;
             updateAudioReactiveGlow();
+
+            if (auraMesh) {
+                auraMesh.material.opacity = 0.46 + Math.sin(time * 0.6) * 0.05 + audioReactiveLevel * 0.08;
+                const auraScale = 52 + Math.sin(time * 0.4) * 2 + audioReactiveLevel * 3;
+                auraMesh.scale.set(auraScale, auraScale, 1);
+            }
+
+            if (ambientDustSystem) {
+                ambientDustSystem.rotation.y += delta * 0.018;
+                ambientDustSystem.rotation.x = Math.sin(time * 0.15) * 0.06;
+                ambientDustSystem.material.opacity = 0.18 + audioReactiveLevel * 0.05;
+            }
+
+            if (foregroundDustSystem) {
+                const foregroundPositions = foregroundDustSystem.geometry.attributes.position.array;
+                for (let i = 0; i < foregroundPositions.length; i += 3) {
+                    foregroundPositions[i + 1] += Math.sin(time * 0.8 + i) * 0.002;
+                    foregroundPositions[i + 2] -= delta * 1.8;
+                    if (foregroundPositions[i + 2] < 8) {
+                        foregroundPositions[i] = (Math.random() - 0.5) * 18;
+                        foregroundPositions[i + 1] = (Math.random() - 0.5) * 12;
+                        foregroundPositions[i + 2] = 22 + Math.random() * 14;
+                    }
+                }
+                foregroundDustSystem.geometry.attributes.position.needsUpdate = true;
+                foregroundDustSystem.material.opacity = 0.12 + audioReactiveLevel * 0.04;
+            }
 
             // 3. 照片更新 (【恢复】动态FOV距离计算)
             const vFOV = THREE.MathUtils.degToRad(camera.fov);
